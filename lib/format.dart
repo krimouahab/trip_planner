@@ -1,13 +1,20 @@
 import 'package:intl/intl.dart';
 
 final _money = NumberFormat('#,##0.00');
+final _rate = NumberFormat('#,##0.####');
 final _time = DateFormat('HH:mm');
 final _day = DateFormat('EEE d MMM yyyy');
 final _shortDay = DateFormat('EEE d MMM');
 final _dateTime = DateFormat('EEE d MMM, HH:mm');
 
-String money(double v, String currency) =>
-    '${v < 0 ? '-' : ''}$currency${_money.format(v.abs())}';
+/// "1,234.50 EUR"
+String money(double v, String code) =>
+    '${v < 0 ? '-' : ''}${_money.format(v.abs())} $code';
+
+/// A money amount without its code.
+String amount(double v) => '${v < 0 ? '-' : ''}${_money.format(v.abs())}';
+
+String rate(double v) => _rate.format(v);
 
 String time(DateTime t) => _time.format(t);
 

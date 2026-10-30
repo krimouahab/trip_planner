@@ -4,11 +4,13 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../currency.dart';
 import '../format.dart' as fmt;
 import '../models.dart';
 import '../store.dart';
 import '../widgets/linkified_text.dart';
 import 'block_editor_screen.dart';
+import 'rates_screen.dart';
 import 'trip_editor_screen.dart';
 
 class TripDashboardScreen extends StatefulWidget {
@@ -132,6 +134,11 @@ class _TripDashboardScreenState extends State<TripDashboardScreen> {
     }
   }
 
+  Future<void> _openRates() => Navigator.push(
+    context,
+    MaterialPageRoute(builder: (_) => RatesScreen(store: store)),
+  );
+
   Future<void> _tripMenu(Trip trip, String action) async {
     switch (action) {
       case 'edit':
@@ -141,6 +148,8 @@ class _TripDashboardScreenState extends State<TripDashboardScreen> {
             builder: (_) => TripEditorScreen(store: store, trip: trip),
           ),
         );
+      case 'rates':
+        await _openRates();
       case 'csv':
         await Clipboard.setData(ClipboardData(text: _toCsv(trip)));
         if (!mounted) return;
@@ -177,9 +186,11 @@ class _TripDashboardScreenState extends State<TripDashboardScreen> {
   }
 
   String _toCsv(Trip trip) {
+    final rates = store.rates;
     String q(String s) => '"${s.replaceAll('"', '""')}"';
     final lines = <String>[
-      'Date,Start,End,Duration (min),Activity,Budget,Cost,Remaining,Description',
+      'Date,Start,End,Duration (min),Activity,Budget,Budget currency,Budget DZD,'
+          'Cost,Cost currency,Cost DZD,Remaining DZD,Description',
       for (final b in trip.sortedBlocks)
         [
           fmt.shortDay(b.start),
@@ -188,8 +199,12 @@ class _TripDashboardScreenState extends State<TripDashboardScreen> {
           b.duration.inMinutes,
           q(b.activity),
           b.budget.toStringAsFixed(2),
+          b.budgetCurrency,
+          b.budgetHome(rates)?.toStringAsFixed(2) ?? '',
           b.cost.toStringAsFixed(2),
-          b.remaining.toStringAsFixed(2),
+          b.costCurrency,
+          b.costHome(rates)?.toStringAsFixed(2) ?? '',
+          b.remainingHome(rates)?.toStringAsFixed(2) ?? '',
           q(b.description),
         ].join(','),
     ];
@@ -238,6 +253,13 @@ class _TripDashboardScreenState extends State<TripDashboardScreen> {
                     ),
                   ),
                   PopupMenuItem(
+                    value: 'rates',
+                    child: ListTile(
+                      leading: Icon(Icons.currency_exchange),
+                      title: Text('Exchange rates'),
+                    ),
+                  ),
+                  PopupMenuItem(
                     value: 'csv',
                     child: ListTile(
                       leading: Icon(Icons.table_view),
@@ -264,12 +286,15 @@ class _TripDashboardScreenState extends State<TripDashboardScreen> {
             children: [
               _SummaryPanel(
                 trip: trip,
+                rates: store.rates,
+                onOpenRates: _openRates,
                 expanded: _showSummary,
                 onToggle: () => setState(() => _showSummary = !_showSummary),
               ),
               Expanded(
                 child: _TripTable(
                   trip: trip,
+                  rates: store.rates,
                   rows: rows,
                   onBlockTap: (b) => _editBlock(trip, block: b),
                   onBlockLongPress: (b) => _blockMenu(trip, b),
@@ -288,10 +313,14 @@ class _TripDashboardScreenState extends State<TripDashboardScreen> {
 
 class _SummaryPanel extends StatelessWidget {
   final Trip trip;
+  final Rates rates;
+  final VoidCallback onOpenRates;
   final bool expanded;
   final VoidCallback onToggle;
   const _SummaryPanel({
     required this.trip,
+    required this.rates,
+    required this.onOpenRates,
     required this.expanded,
     required this.onToggle,
   });
@@ -300,15 +329,17 @@ class _SummaryPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
-    final cur = trip.currency;
+    const cur = homeCurrency;
     final total = trip.duration.inMinutes;
     final planned = trip.plannedMinutes;
     final ratio = total <= 0 ? 0.0 : planned / total;
-    final remaining = trip.remaining;
-    final overCount = trip.blocks.where((b) => b.overBudget).length;
-    final spentRatio = trip.totalBudget <= 0
-        ? 0.0
-        : trip.totalCost / trip.totalBudget;
+    final budget = trip.totalBudget(rates);
+    final cost = trip.totalCost(rates);
+    final remaining = budget.value - cost.value;
+    final overCount = trip.blocks.where((b) => b.overBudget(rates)).length;
+    final spentRatio = budget.value <= 0 ? 0.0 : cost.value / budget.value;
+    final missingCodes = {...budget.missingCodes, ...cost.missingCodes};
+    final byCurrency = trip.totalsByCurrency()..remove(homeCurrency);
 
     final now = DateTime.now();
     String? nowText;
@@ -349,7 +380,7 @@ class _SummaryPanel extends StatelessWidget {
                   ),
                   if (!expanded)
                     Text(
-                      '${fmt.money(trip.totalCost, cur)} / ${fmt.money(trip.totalBudget, cur)}',
+                      '${fmt.amount(cost.value)} / ${fmt.money(budget.value, cur)}',
                       style: theme.textTheme.labelLarge?.copyWith(
                         color: remaining < 0 ? cs.error : null,
                       ),
@@ -376,14 +407,14 @@ class _SummaryPanel extends StatelessWidget {
                           _Stat(
                             width: w,
                             icon: Icons.account_balance_wallet_outlined,
-                            label: 'Budget',
-                            value: fmt.money(trip.totalBudget, cur),
+                            label: 'Budget (DZD)',
+                            value: fmt.money(budget.value, cur),
                           ),
                           _Stat(
                             width: w,
                             icon: Icons.receipt_long_outlined,
-                            label: 'Spent',
-                            value: fmt.money(trip.totalCost, cur),
+                            label: 'Spent (DZD)',
+                            value: fmt.money(cost.value, cur),
                             progress: spentRatio,
                             color: spentRatio > 1 ? cs.error : null,
                           ),
@@ -392,7 +423,9 @@ class _SummaryPanel extends StatelessWidget {
                             icon: remaining < 0
                                 ? Icons.trending_down
                                 : Icons.savings_outlined,
-                            label: remaining < 0 ? 'Over budget' : 'Remaining',
+                            label: remaining < 0
+                                ? 'Over budget (DZD)'
+                                : 'Remaining (DZD)',
                             value: fmt.money(remaining.abs(), cur),
                             color: remaining < 0
                                 ? cs.error
@@ -414,6 +447,78 @@ class _SummaryPanel extends StatelessWidget {
                           ),
                         ],
                       ),
+                      if (missingCodes.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Material(
+                          color: cs.errorContainer,
+                          borderRadius: BorderRadius.circular(8),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(8),
+                            onTap: onOpenRates,
+                            child: Padding(
+                              padding: const EdgeInsets.all(8),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.warning_amber,
+                                    size: 18,
+                                    color: cs.onErrorContainer,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      'No rate for ${missingCodes.join(', ')}. '
+                                      '${budget.missing + cost.missing} amount(s) left out of the DZD totals. Tap to set rates.',
+                                      style: theme.textTheme.labelMedium
+                                          ?.copyWith(
+                                            color: cs.onErrorContainer,
+                                          ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                      if (byCurrency.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        for (final e in byCurrency.entries)
+                          InkWell(
+                            onTap: onOpenRates,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 2),
+                              child: Text.rich(
+                                TextSpan(
+                                  style: theme.textTheme.labelMedium,
+                                  children: [
+                                    TextSpan(
+                                      text: '${e.key}  ',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    TextSpan(
+                                      text:
+                                          'budget ${fmt.amount(e.value.$1)} · '
+                                          'spent ${fmt.amount(e.value.$2)}   ',
+                                    ),
+                                    TextSpan(
+                                      text: rates.hasRate(e.key)
+                                          ? '1 ${e.key} = ${fmt.rate(rates.rate(e.key)!)} DZD'
+                                          : 'no rate',
+                                      style: TextStyle(
+                                        color: rates.hasRate(e.key)
+                                            ? cs.primary
+                                            : cs.error,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
                     ],
                   );
                 },
@@ -542,17 +647,17 @@ class _Cols {
 
   factory _Cols.forWidth(double w) {
     if (w < 600) {
-      const fixed = 28.0 + 64 + 124 + 78 * 3;
+      const fixed = 28.0 + 60 + 104 + 96 * 3;
       return _Cols._(
         compact: true,
         num: 28,
-        time: 64,
-        activity: 124,
-        money: 78,
+        time: 60,
+        activity: 104,
+        money: 96,
         desc: math.max(240, w - fixed),
       );
     }
-    const fixed = 40.0 + 58 + 66 + 72 + 180 + 96 * 3;
+    const fixed = 40.0 + 58 + 66 + 72 + 180 + 130 * 3;
     return _Cols._(
       compact: false,
       num: 40,
@@ -560,7 +665,7 @@ class _Cols {
       end: 66,
       dur: 72,
       activity: 180,
-      money: 96,
+      money: 130,
       desc: math.max(280, w - fixed),
     );
   }
@@ -611,6 +716,7 @@ class _Cols {
 
 class _TripTable extends StatelessWidget {
   final Trip trip;
+  final Rates rates;
   final List<TableRowItem> rows;
   final ValueChanged<TimeBlock> onBlockTap;
   final ValueChanged<TimeBlock> onBlockLongPress;
@@ -618,6 +724,7 @@ class _TripTable extends StatelessWidget {
 
   const _TripTable({
     required this.trip,
+    required this.rates,
     required this.rows,
     required this.onBlockTap,
     required this.onBlockLongPress,
@@ -645,17 +752,21 @@ class _TripTable extends StatelessWidget {
                       itemCount: rows.length + 1,
                       itemBuilder: (context, i) {
                         if (i == rows.length) {
-                          return _TotalRow(trip: trip, cols: cols);
+                          return _TotalRow(
+                            trip: trip,
+                            rates: rates,
+                            cols: cols,
+                          );
                         }
                         return switch (rows[i]) {
                           DayHeaderRow r => _DayRow(
                             row: r,
-                            trip: trip,
+                            rates: rates,
                             cols: cols,
                           ),
                           BlockRow r => _BlockRowView(
                             row: r,
-                            trip: trip,
+                            rates: rates,
                             cols: cols,
                             isNow: r.block.isActiveAt(now),
                             onTap: () => onBlockTap(r.block),
@@ -724,40 +835,93 @@ Widget _gridRow(List<Widget> cells, {Color? color}) => Container(
   ),
 );
 
-/// Budget / Cost / Left cells for header, day and total rows.
-List<Widget> _moneyCells(
+/// Keeps a money amount on one line, shrinking it if the column is narrow.
+Widget _oneLine(Widget text) => FittedBox(
+  fit: BoxFit.scaleDown,
+  alignment: Alignment.centerRight,
+  child: text,
+);
+
+/// Budget / Cost / Left cells of day and total rows, all in DZD.
+List<Widget> _homeTotalCells(
   _Cols cols,
-  double budget,
-  double cost,
-  String cur,
+  HomeTotal budget,
+  HomeTotal cost,
   TextStyle style, {
   required Color errorColor,
   Color? okColor,
 }) {
-  final left = budget - cost;
+  final left = budget.value - cost.value;
+  Widget cell(String text, HomeTotal total, {Color? color}) => _Cell(
+    cols,
+    cols.money,
+    Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _oneLine(Text(text, style: style.copyWith(color: color))),
+        if (!total.complete)
+          Text(
+            '+${total.missing} without rate',
+            style: style.copyWith(
+              fontSize: 10,
+              fontWeight: FontWeight.w500,
+              color: errorColor,
+            ),
+          ),
+      ],
+    ),
+    alignment: Alignment.centerRight,
+  );
   return [
-    _Cell(
-      cols,
-      cols.money,
-      Text(fmt.money(budget, cur), style: style),
-      alignment: Alignment.centerRight,
-    ),
-    _Cell(
-      cols,
-      cols.money,
-      Text(fmt.money(cost, cur), style: style),
-      alignment: Alignment.centerRight,
-    ),
-    _Cell(
-      cols,
-      cols.money,
-      Text(
-        fmt.money(left, cur),
-        style: style.copyWith(color: left < 0 ? errorColor : okColor),
-      ),
-      alignment: Alignment.centerRight,
+    cell(fmt.money(budget.value, homeCurrency), budget),
+    cell(fmt.money(cost.value, homeCurrency), cost),
+    cell(
+      fmt.money(left, homeCurrency),
+      HomeTotal(0, budget.missing + cost.missing, const {}),
+      color: left < 0 ? errorColor : okColor,
     ),
   ];
+}
+
+/// An amount in its own currency, with its DZD value underneath.
+Widget _amountCell(
+  BuildContext context,
+  _Cols cols,
+  double amount,
+  String code,
+  Rates rates,
+  TextStyle style, {
+  Color? color,
+}) {
+  final cs = Theme.of(context).colorScheme;
+  final inHome = rates.toHome(amount, code);
+  final small = style.copyWith(fontSize: 11, fontWeight: FontWeight.w500);
+  return _Cell(
+    cols,
+    cols.money,
+    Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _oneLine(
+          Text(fmt.money(amount, code), style: style.copyWith(color: color)),
+        ),
+        if (code != homeCurrency && amount != 0)
+          _oneLine(
+            Text(
+              inHome == null
+                  ? 'no rate'
+                  : '= ${fmt.money(inHome, homeCurrency)}',
+              style: small.copyWith(
+                color: inHome == null ? cs.error : cs.primary,
+              ),
+            ),
+          ),
+      ],
+    ),
+    alignment: Alignment.centerRight,
+  );
 }
 
 class _HeaderRow extends StatelessWidget {
@@ -790,7 +954,7 @@ class _HeaderRow extends StatelessWidget {
       h(cols.activity, 'Activity'),
       h(cols.money, 'Budget', right: true),
       h(cols.money, 'Cost', right: true),
-      h(cols.money, 'Left', right: true),
+      h(cols.money, 'Left (DZD)', right: true),
       h(cols.desc, 'Description'),
     ]);
   }
@@ -798,9 +962,9 @@ class _HeaderRow extends StatelessWidget {
 
 class _DayRow extends StatelessWidget {
   final DayHeaderRow row;
-  final Trip trip;
+  final Rates rates;
   final _Cols cols;
-  const _DayRow({required this.row, required this.trip, required this.cols});
+  const _DayRow({required this.row, required this.rates, required this.cols});
 
   @override
   Widget build(BuildContext context) {
@@ -819,11 +983,10 @@ class _DayRow extends StatelessWidget {
           style: style,
         ),
       ),
-      ..._moneyCells(
+      ..._homeTotalCells(
         cols,
-        row.budget,
-        row.cost,
-        trip.currency,
+        budgetOf(row.blocks, rates),
+        costOf(row.blocks, rates),
         style,
         errorColor: cs.error,
       ),
@@ -841,7 +1004,7 @@ class _DayRow extends StatelessWidget {
 
 class _BlockRowView extends StatelessWidget {
   final BlockRow row;
-  final Trip trip;
+  final Rates rates;
   final _Cols cols;
   final bool isNow;
   final VoidCallback onTap;
@@ -849,7 +1012,7 @@ class _BlockRowView extends StatelessWidget {
 
   const _BlockRowView({
     required this.row,
-    required this.trip,
+    required this.rates,
     required this.cols,
     required this.isNow,
     required this.onTap,
@@ -874,7 +1037,8 @@ class _BlockRowView extends StatelessWidget {
         : row.outsideTrip
         ? 'Outside the trip dates'
         : null;
-    final over = b.overBudget;
+    final over = b.overBudget(rates);
+    final left = b.remainingHome(rates);
 
     return Material(
       color: bg,
@@ -908,34 +1072,39 @@ class _BlockRowView extends StatelessWidget {
             cols.activity,
             Text(b.activity, style: text.copyWith(fontWeight: FontWeight.w600)),
           ),
-          _Cell(
+          _amountCell(context, cols, b.budget, b.budgetCurrency, rates, mono),
+          _amountCell(
+            context,
             cols,
-            cols.money,
-            Text(fmt.money(b.budget, trip.currency), style: mono),
-            alignment: Alignment.centerRight,
+            b.cost,
+            b.costCurrency,
+            rates,
+            mono.copyWith(fontWeight: over ? FontWeight.bold : null),
+            color: over ? cs.error : null,
           ),
           _Cell(
             cols,
             cols.money,
-            Text(
-              fmt.money(b.cost, trip.currency),
-              style: mono.copyWith(
-                color: over ? cs.error : null,
-                fontWeight: over ? FontWeight.bold : null,
-              ),
-            ),
-            alignment: Alignment.centerRight,
-          ),
-          _Cell(
-            cols,
-            cols.money,
-            Text(
-              fmt.money(b.remaining, trip.currency),
-              style: mono.copyWith(
-                color: over ? cs.onErrorContainer : Colors.green.shade800,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
+            left == null
+                ? Tooltip(
+                    message: 'Set the missing exchange rate',
+                    triggerMode: TooltipTriggerMode.tap,
+                    child: Text(
+                      'no rate',
+                      style: mono.copyWith(color: cs.error, fontSize: 11),
+                    ),
+                  )
+                : _oneLine(
+                    Text(
+                      fmt.money(left, homeCurrency),
+                      style: mono.copyWith(
+                        color: over
+                            ? cs.onErrorContainer
+                            : Colors.green.shade800,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
             alignment: Alignment.centerRight,
             color: over ? cs.errorContainer.withValues(alpha: 0.6) : null,
           ),
@@ -1001,8 +1170,13 @@ class _GapRowView extends StatelessWidget {
 
 class _TotalRow extends StatelessWidget {
   final Trip trip;
+  final Rates rates;
   final _Cols cols;
-  const _TotalRow({required this.trip, required this.cols});
+  const _TotalRow({
+    required this.trip,
+    required this.rates,
+    required this.cols,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1018,11 +1192,10 @@ class _TotalRow extends StatelessWidget {
         cols.lead,
         Text('TOTAL  ·  ${trip.blocks.length} blocks', style: style),
       ),
-      ..._moneyCells(
+      ..._homeTotalCells(
         cols,
-        trip.totalBudget,
-        trip.totalCost,
-        trip.currency,
+        trip.totalBudget(rates),
+        trip.totalCost(rates),
         style,
         errorColor: cs.error,
         okColor: Colors.green.shade800,

@@ -1,9 +1,12 @@
 import 'package:uuid/uuid.dart';
 
+import 'currency.dart';
+
 const _uuid = Uuid();
 
 /// One scheduled slot of the trip: a time range with an activity, a budget
-/// (what you planned to spend) and a cost (what you actually spent).
+/// (what you planned to spend) and a cost (what you actually spent). Budget
+/// and cost each carry their own currency code.
 class TimeBlock {
   final String id;
   DateTime start;
@@ -11,7 +14,9 @@ class TimeBlock {
   String activity;
   String description;
   double budget;
+  String budgetCurrency;
   double cost;
+  String costCurrency;
 
   TimeBlock({
     String? id,
@@ -20,12 +25,28 @@ class TimeBlock {
     required this.activity,
     this.description = '',
     this.budget = 0,
+    this.budgetCurrency = homeCurrency,
     this.cost = 0,
+    this.costCurrency = homeCurrency,
   }) : id = id ?? _uuid.v4();
 
   Duration get duration => end.difference(start);
-  double get remaining => budget - cost;
-  bool get overBudget => cost > budget;
+
+  double? budgetHome(Rates r) => r.toHome(budget, budgetCurrency);
+  double? costHome(Rates r) => r.toHome(cost, costCurrency);
+
+  /// Budget minus cost in DZD, or null if either has no rate.
+  double? remainingHome(Rates r) {
+    final b = budgetHome(r);
+    final c = costHome(r);
+    return b == null || c == null ? null : b - c;
+  }
+
+  bool overBudget(Rates r) {
+    if (budgetCurrency == costCurrency) return cost > budget;
+    final left = remainingHome(r);
+    return left != null && left < 0;
+  }
 
   bool isActiveAt(DateTime t) => !t.isBefore(start) && t.isBefore(end);
 
@@ -36,17 +57,28 @@ class TimeBlock {
     'activity': activity,
     'description': description,
     'budget': budget,
+    'budgetCurrency': budgetCurrency,
     'cost': cost,
+    'costCurrency': costCurrency,
   };
 
-  factory TimeBlock.fromJson(Map<String, dynamic> j) => TimeBlock(
+  factory TimeBlock.fromJson(
+    Map<String, dynamic> j, {
+    String defaultCurrency = homeCurrency,
+  }) => TimeBlock(
     id: j['id'] as String,
     start: DateTime.parse(j['start'] as String),
     end: DateTime.parse(j['end'] as String),
     activity: j['activity'] as String? ?? '',
     description: j['description'] as String? ?? '',
     budget: (j['budget'] as num?)?.toDouble() ?? 0,
+    budgetCurrency: normalizeCurrency(
+      j['budgetCurrency'] as String? ?? defaultCurrency,
+    ),
     cost: (j['cost'] as num?)?.toDouble() ?? 0,
+    costCurrency: normalizeCurrency(
+      j['costCurrency'] as String? ?? defaultCurrency,
+    ),
   );
 }
 
@@ -55,6 +87,8 @@ class Trip {
   String name;
   DateTime start;
   DateTime end;
+
+  /// Currency code pre-selected for new blocks.
   String currency;
   List<TimeBlock> blocks;
 
@@ -63,7 +97,7 @@ class Trip {
     required this.name,
     required this.start,
     required this.end,
-    this.currency = '\$',
+    this.currency = homeCurrency,
     List<TimeBlock>? blocks,
   }) : id = id ?? _uuid.v4(),
        blocks = blocks ?? [];
@@ -73,9 +107,33 @@ class Trip {
   List<TimeBlock> get sortedBlocks =>
       [...blocks]..sort((a, b) => a.start.compareTo(b.start));
 
-  double get totalBudget => blocks.fold(0, (s, b) => s + b.budget);
-  double get totalCost => blocks.fold(0, (s, b) => s + b.cost);
-  double get remaining => totalBudget - totalCost;
+  HomeTotal totalBudget(Rates r) => budgetOf(blocks, r);
+  HomeTotal totalCost(Rates r) => costOf(blocks, r);
+
+  /// Every currency code used by this trip.
+  Set<String> get currenciesUsed => {
+    currency,
+    for (final b in blocks) ...[
+      if (b.budget != 0) b.budgetCurrency,
+      if (b.cost != 0) b.costCurrency,
+    ],
+  };
+
+  /// Raw (unconverted) budget and cost totals per currency code.
+  Map<String, (double, double)> totalsByCurrency() {
+    final m = <String, (double, double)>{};
+    for (final b in blocks) {
+      if (b.budget != 0) {
+        final (bu, co) = m[b.budgetCurrency] ?? (0.0, 0.0);
+        m[b.budgetCurrency] = (bu + b.budget, co);
+      }
+      if (b.cost != 0) {
+        final (bu, co) = m[b.costCurrency] ?? (0.0, 0.0);
+        m[b.costCurrency] = (bu, co + b.cost);
+      }
+    }
+    return m;
+  }
 
   /// Minutes of the trip covered by at least one block (overlaps counted once,
   /// anything outside the trip window ignored).
@@ -110,12 +168,23 @@ class Trip {
     name: j['name'] as String? ?? '',
     start: DateTime.parse(j['start'] as String),
     end: DateTime.parse(j['end'] as String),
-    currency: j['currency'] as String? ?? '\$',
+    currency: normalizeCurrency(j['currency'] as String?),
     blocks: (j['blocks'] as List? ?? [])
-        .map((e) => TimeBlock.fromJson(e as Map<String, dynamic>))
+        .map(
+          (e) => TimeBlock.fromJson(
+            e as Map<String, dynamic>,
+            defaultCurrency: normalizeCurrency(j['currency'] as String?),
+          ),
+        )
         .toList(),
   );
 }
+
+HomeTotal budgetOf(Iterable<TimeBlock> blocks, Rates r) =>
+    HomeTotal.sum(blocks.map((b) => (b.budget, b.budgetCurrency)), r);
+
+HomeTotal costOf(Iterable<TimeBlock> blocks, Rates r) =>
+    HomeTotal.sum(blocks.map((b) => (b.cost, b.costCurrency)), r);
 
 /// A row in the dashboard table.
 sealed class TableRowItem {}
@@ -123,10 +192,9 @@ sealed class TableRowItem {}
 class DayHeaderRow extends TableRowItem {
   final int dayNumber;
   final DateTime day;
-  final double budget;
-  final double cost;
+  final List<TimeBlock> blocks;
   final Duration planned;
-  DayHeaderRow(this.dayNumber, this.day, this.budget, this.cost, this.planned);
+  DayHeaderRow(this.dayNumber, this.day, this.blocks, this.planned);
 }
 
 class BlockRow extends TableRowItem {
@@ -184,8 +252,7 @@ List<TableRowItem> buildTableRows(Trip trip, {bool includeGaps = true}) {
       DayHeaderRow(
         dayNumber,
         d,
-        dayBlocks.fold(0.0, (s, b) => s + b.budget),
-        dayBlocks.fold(0.0, (s, b) => s + b.cost),
+        dayBlocks,
         dayBlocks.fold(Duration.zero, (s, b) => s + b.duration),
       ),
     );

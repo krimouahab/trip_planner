@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 
+import '../currency.dart';
 import '../format.dart' as fmt;
 import '../models.dart';
 import '../store.dart';
+import 'rates_screen.dart';
 import 'trip_dashboard_screen.dart';
 import 'trip_editor_screen.dart';
 
@@ -29,7 +31,19 @@ class TripsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('My trips')),
+      appBar: AppBar(
+        title: const Text('My trips'),
+        actions: [
+          IconButton(
+            tooltip: 'Exchange rates',
+            icon: const Icon(Icons.currency_exchange),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => RatesScreen(store: store)),
+            ),
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _create(context),
         icon: const Icon(Icons.add),
@@ -48,6 +62,7 @@ class TripsScreen extends StatelessWidget {
             itemCount: trips.length,
             itemBuilder: (context, i) => _TripCard(
               trip: trips[i],
+              rates: store.rates,
               onTap: () => _open(context, trips[i]),
             ),
           );
@@ -100,15 +115,22 @@ class _Empty extends StatelessWidget {
 
 class _TripCard extends StatelessWidget {
   final Trip trip;
+  final Rates rates;
   final VoidCallback onTap;
-  const _TripCard({required this.trip, required this.onTap});
+  const _TripCard({
+    required this.trip,
+    required this.rates,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final total = trip.duration.inMinutes;
     final planned = total <= 0 ? 0.0 : trip.plannedMinutes / total;
-    final over = trip.totalCost > trip.totalBudget;
+    final budget = trip.totalBudget(rates);
+    final cost = trip.totalCost(rates);
+    final over = cost.value > budget.value;
     final now = DateTime.now();
     final status = now.isBefore(trip.start)
         ? 'Starts in ${fmt.duration(trip.start.difference(now))}'
@@ -146,15 +168,25 @@ class _TripCard extends StatelessWidget {
               const SizedBox(height: 12),
               Row(
                 children: [
-                  _Mini('Budget', fmt.money(trip.totalBudget, trip.currency)),
+                  _Mini('Budget', fmt.money(budget.value, homeCurrency)),
                   _Mini(
                     'Spent',
-                    fmt.money(trip.totalCost, trip.currency),
+                    fmt.money(cost.value, homeCurrency),
                     color: over ? theme.colorScheme.error : null,
                   ),
                   _Mini('Blocks', '${trip.blocks.length}'),
                 ],
               ),
+              if (!budget.complete || !cost.complete)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    'Missing rate for ${{...budget.missingCodes, ...cost.missingCodes}.join(', ')}',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.error,
+                    ),
+                  ),
+                ),
               const SizedBox(height: 12),
               ClipRRect(
                 borderRadius: BorderRadius.circular(4),
@@ -188,9 +220,13 @@ class _Mini extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(label, style: theme.textTheme.labelSmall),
-          Text(
-            value,
-            style: theme.textTheme.titleSmall?.copyWith(color: color),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              value,
+              style: theme.textTheme.titleSmall?.copyWith(color: color),
+            ),
           ),
         ],
       ),

@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../currency.dart';
 import '../format.dart' as fmt;
 import '../models.dart';
 import '../store.dart';
+import '../widgets/currency_picker.dart';
 import '../widgets/date_time_field.dart';
 import '../widgets/linkified_text.dart';
 
@@ -36,6 +38,8 @@ class _BlockEditorScreenState extends State<BlockEditorScreen> {
   late final TextEditingController _description;
   late DateTime _start;
   late DateTime _end;
+  late String _budgetCur;
+  late String _costCur;
   String? _startError;
   String? _endError;
 
@@ -49,6 +53,8 @@ class _BlockEditorScreenState extends State<BlockEditorScreen> {
     _cost = TextEditingController(text: _num(b?.cost));
     _description = TextEditingController(text: b?.description ?? '');
     _description.addListener(() => setState(() {}));
+    _budgetCur = b?.budgetCurrency ?? trip.currency;
+    _costCur = b?.costCurrency ?? trip.currency;
 
     if (b != null) {
       _start = b.start;
@@ -119,7 +125,9 @@ class _BlockEditorScreenState extends State<BlockEditorScreen> {
       activity: _activity.text.trim(),
       description: _description.text.trim(),
       budget: _parse(_budget.text),
+      budgetCurrency: _budgetCur,
       cost: _parse(_cost.text),
+      costCurrency: _costCur,
     );
     await widget.store.upsertBlock(widget.trip, block);
     if (mounted) Navigator.pop(context, true);
@@ -146,6 +154,105 @@ class _BlockEditorScreenState extends State<BlockEditorScreen> {
     if (ok != true) return;
     await widget.store.deleteBlock(widget.trip, widget.block!.id);
     if (mounted) Navigator.pop(context, true);
+  }
+
+  /// An amount field with its currency button and the DZD value below.
+  Widget _moneyField({
+    required TextEditingController controller,
+    required String label,
+    required String code,
+    required ValueChanged<String> onCode,
+    required List<TextInputFormatter> formatters,
+  }) {
+    final cs = Theme.of(context).colorScheme;
+    final rates = widget.store.rates;
+    final value = _parse(controller.text);
+    final inHome = rates.toHome(value, code);
+    final String? helper;
+    final String? error;
+    if (code == homeCurrency || value == 0) {
+      helper = code == homeCurrency ? null : rateLabel(rates, code);
+      error = null;
+    } else if (inHome == null) {
+      helper = null;
+      error = 'No rate for $code yet. Tap $code, or set it in Settings.';
+    } else {
+      helper =
+          '= ${fmt.money(inHome, homeCurrency)}  (${rateLabel(rates, code)})';
+      error = null;
+    }
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: TextFormField(
+            controller: controller,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            inputFormatters: formatters,
+            onChanged: (_) => setState(() {}),
+            decoration: InputDecoration(
+              labelText: '$label ($code)',
+              border: const OutlineInputBorder(),
+              helperText: helper,
+              helperMaxLines: 2,
+              helperStyle: TextStyle(
+                color: cs.primary,
+                fontWeight: FontWeight.w600,
+              ),
+              errorText: error,
+              errorMaxLines: 2,
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        CurrencyButton(store: widget.store, code: code, onChanged: onCode),
+      ],
+    );
+  }
+
+  /// Budget minus cost, compared in DZD when the currencies differ.
+  Widget _remainingLine(ThemeData theme, double budget, double cost) {
+    final rates = widget.store.rates;
+    final String text;
+    final bool over;
+    if (_budgetCur == _costCur) {
+      final left = budget - cost;
+      over = left < 0;
+      final inHome = rates.toHome(left.abs(), _budgetCur);
+      final extra = _budgetCur == homeCurrency || inHome == null
+          ? ''
+          : ' (${fmt.money(inHome, homeCurrency)})';
+      text = over
+          ? 'Over budget by ${fmt.money(-left, _budgetCur)}$extra'
+          : 'Remaining: ${fmt.money(left, _budgetCur)}$extra';
+    } else {
+      final b = rates.toHome(budget, _budgetCur);
+      final c = rates.toHome(cost, _costCur);
+      if (b == null || c == null) {
+        return Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Text(
+            'Set the missing rate to compare budget and cost in DZD.',
+            style: TextStyle(color: theme.colorScheme.error),
+          ),
+        );
+      }
+      over = c > b;
+      text = over
+          ? 'Over budget by ${fmt.money(c - b, homeCurrency)}'
+          : 'Remaining: ${fmt.money(b - c, homeCurrency)}';
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: over ? theme.colorScheme.error : Colors.green.shade700,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
   }
 
   @override
@@ -240,56 +347,22 @@ class _BlockEditorScreenState extends State<BlockEditorScreen> {
               ],
             ),
             const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: TextFormField(
-                    controller: _budget,
-                    keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true,
-                    ),
-                    inputFormatters: moneyFormatter,
-                    onChanged: (_) => setState(() {}),
-                    decoration: InputDecoration(
-                      labelText: 'Budget',
-                      prefixText: '${trip.currency} ',
-                      border: const OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: TextFormField(
-                    controller: _cost,
-                    keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true,
-                    ),
-                    inputFormatters: moneyFormatter,
-                    onChanged: (_) => setState(() {}),
-                    decoration: InputDecoration(
-                      labelText: 'Actual cost',
-                      prefixText: '${trip.currency} ',
-                      border: const OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-              ],
+            _moneyField(
+              controller: _budget,
+              label: 'Budget',
+              code: _budgetCur,
+              onCode: (c) => setState(() => _budgetCur = c),
+              formatters: moneyFormatter,
             ),
-            if (budget > 0 || cost > 0)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  cost > budget
-                      ? 'Over budget by ${fmt.money(cost - budget, trip.currency)}'
-                      : 'Remaining: ${fmt.money(budget - cost, trip.currency)}',
-                  style: TextStyle(
-                    color: cost > budget
-                        ? theme.colorScheme.error
-                        : Colors.green.shade700,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
+            const SizedBox(height: 12),
+            _moneyField(
+              controller: _cost,
+              label: 'Actual cost',
+              code: _costCur,
+              onCode: (c) => setState(() => _costCur = c),
+              formatters: moneyFormatter,
+            ),
+            if (budget > 0 || cost > 0) _remainingLine(theme, budget, cost),
             const SizedBox(height: 16),
             TextFormField(
               controller: _description,

@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
+import '../currency.dart';
 import '../models.dart';
 import '../store.dart';
+import '../widgets/currency_picker.dart';
 import '../widgets/date_time_field.dart';
 
 /// Create a trip or change its name, currency, start and end.
@@ -18,7 +20,7 @@ class TripEditorScreen extends StatefulWidget {
 class _TripEditorScreenState extends State<TripEditorScreen> {
   final _form = GlobalKey<FormState>();
   late final TextEditingController _name;
-  late final TextEditingController _currency;
+  late String _currency;
   late DateTime _start;
   late DateTime _end;
   String? _rangeError;
@@ -29,7 +31,7 @@ class _TripEditorScreenState extends State<TripEditorScreen> {
     final t = widget.trip;
     final now = DateTime.now();
     _name = TextEditingController(text: t?.name ?? '');
-    _currency = TextEditingController(text: t?.currency ?? '\$');
+    _currency = t?.currency ?? homeCurrency;
     _start = t?.start ?? DateTime(now.year, now.month, now.day + 1, 8);
     _end = t?.end ?? DateTime(now.year, now.month, now.day + 3, 20);
   }
@@ -37,7 +39,6 @@ class _TripEditorScreenState extends State<TripEditorScreen> {
   @override
   void dispose() {
     _name.dispose();
-    _currency.dispose();
     super.dispose();
   }
 
@@ -53,7 +54,7 @@ class _TripEditorScreenState extends State<TripEditorScreen> {
     final trip = existing ?? Trip(name: '', start: _start, end: _end);
     trip
       ..name = _name.text.trim()
-      ..currency = _currency.text.trim()
+      ..currency = _currency
       ..start = _start
       ..end = _end;
     await widget.store.upsertTrip(trip);
@@ -105,14 +106,30 @@ class _TripEditorScreenState extends State<TripEditorScreen> {
               onChanged: (v) => setState(() => _end = v),
             ),
             const SizedBox(height: 16),
-            TextFormField(
-              controller: _currency,
-              decoration: const InputDecoration(
-                labelText: 'Currency symbol',
-                hintText: '\$, €, £, DZD, MAD…',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.payments_outlined),
-              ),
+            Row(
+              children: [
+                const Icon(Icons.payments_outlined),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Default currency for new blocks'),
+                      Text(
+                        'Each budget and cost can still use any currency. '
+                        'Totals are always shown in DZD.',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                CurrencyButton(
+                  store: widget.store,
+                  code: _currency,
+                  onChanged: (c) => setState(() => _currency = c),
+                ),
+              ],
             ),
             if (editing && widget.trip!.blocks.isNotEmpty) ...[
               const SizedBox(height: 16),

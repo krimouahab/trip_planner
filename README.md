@@ -15,7 +15,13 @@ A Flutter mobile app that plans a trip minute by minute in a spreadsheet-style t
 - **Time blocks**: activity, start, end, quick-duration chips, budget, actual cost and a multi-line description.
 - **Clickable links** in descriptions (`https://…`, `www.…`, e-mail addresses), in both the table and the editor preview.
 - Tap a row to edit it. Long-press a row to edit, duplicate or delete it (deletes can be undone).
-- Copy the whole table as CSV, ready to paste into Excel or Google Sheets.
+- **Currencies**: each budget and each cost has its own 3-letter currency code (EUR, USD, TND…).
+  - In every row, under the amount, its value in **DZD** is shown. The Left column and the day and TOTAL rows are in DZD.
+  - The summary at the top is all in DZD, with a per-currency breakdown.
+  - **Settings → Exchange rates** (💱 icon on the home screen, or the ⋮ menu on a trip): set `1 XXX = ? DZD` for each currency.
+  - A currency without a rate is never guessed. Its amounts show "no rate", they are left out of the DZD totals, and a red banner says so.
+  - The trip's currency is the default for new blocks.
+- Copy the whole table as CSV (with currency and DZD columns), ready to paste into Excel or Google Sheets.
 - Data is saved on the device (shared_preferences).
 - On phones, Start/End/Time are combined into one column so Budget and Cost stay visible. Tablets show every column separately.
 
@@ -29,7 +35,9 @@ flutter build ios        # iOS (on a Mac with Xcode)
 
 ## Code
 - `lib/models.dart`: Trip, TimeBlock, and the table row builder (days, gaps, overlaps)
-- `lib/store.dart`: storage on the device
+- `lib/currency.dart`: exchange rates and DZD conversion
+- `lib/store.dart`: storage on the device (trips and rates)
+- `lib/screens/rates_screen.dart`: exchange rate settings
 - `lib/screens/trip_dashboard_screen.dart`: dashboard and table
 - `lib/screens/block_editor_screen.dart`, `trip_editor_screen.dart`: forms
 - `lib/widgets/linkified_text.dart`: clickable links
