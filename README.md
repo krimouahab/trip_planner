@@ -33,6 +33,12 @@ flutter build apk        # Android APK -> build/app/outputs/flutter-apk/app-rele
 flutter build ios        # iOS (on a Mac with Xcode)
 ```
 
+## Get the APK without installing anything
+1. Create a new repository on GitHub and upload this folder to it.
+2. Open the **Actions** tab. The **Build APK** workflow runs on every push, or you can start it with **Run workflow**.
+3. When it finishes (about 5–10 minutes), open the run and download **trip-planner-apk** under *Artifacts*.
+4. Unzip it, copy `app-release.apk` to your phone, open it, and allow "Install unknown apps" when Android asks.
+
 ## Code
 - `lib/models.dart`: Trip, TimeBlock, and the table row builder (days, gaps, overlaps)
 - `lib/currency.dart`: exchange rates and DZD conversion
